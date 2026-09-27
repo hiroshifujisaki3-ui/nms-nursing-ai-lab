@@ -4,6 +4,10 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import streamlit as st
 
+import matplotlib as mpl
+mpl.rcParams["font.family"] = "Noto Sans CJK JP"
+mpl.rcParams["axes.unicode_minus"] = False
+
 from sklearn.compose import ColumnTransformer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
