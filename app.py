@@ -1,12 +1,11 @@
-import io
+import os
+import glob
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
 import streamlit as st
-
-import matplotlib as mpl
-mpl.rcParams["font.family"] = "Noto Sans CJK JP"
-mpl.rcParams["axes.unicode_minus"] = False
 
 from sklearn.compose import ColumnTransformer
 from sklearn.linear_model import LogisticRegression
@@ -21,6 +20,71 @@ from sklearn.metrics import (
 from sklearn.model_selection import StratifiedKFold, cross_val_predict
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
+
+
+# ============================================================
+# Japanese font setup for Streamlit Community Cloud
+# ============================================================
+def setup_japanese_font():
+    """Find and register a Japanese font. Return (font_properties, font_name, path)."""
+    candidates = [
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKjp-Regular.otf",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansJP-Regular.ttf",
+    ]
+
+    # Also search common Linux font directories dynamically.
+    candidates += glob.glob("/usr/share/fonts/**/*NotoSans*CJK*Regular*", recursive=True)
+    candidates += glob.glob("/usr/share/fonts/**/*NotoSans*JP*Regular*", recursive=True)
+    candidates += glob.glob("/usr/local/share/fonts/**/*NotoSans*CJK*Regular*", recursive=True)
+    candidates += glob.glob("/usr/local/share/fonts/**/*NotoSans*JP*Regular*", recursive=True)
+
+    seen = set()
+    candidates = [p for p in candidates if not (p in seen or seen.add(p))]
+
+    for path in candidates:
+        if os.path.isfile(path):
+            try:
+                fm.fontManager.addfont(path)
+                prop = fm.FontProperties(fname=path)
+                family = prop.get_name()
+                plt.rcParams["font.family"] = family
+                plt.rcParams["axes.unicode_minus"] = False
+                return prop, family, path
+            except Exception:
+                pass
+
+    # Last attempt: search already installed font families.
+    for family in [
+        "Noto Sans CJK JP",
+        "Noto Sans JP",
+        "IPAexGothic",
+        "IPAGothic",
+        "TakaoGothic",
+    ]:
+        try:
+            path = fm.findfont(family, fallback_to_default=False)
+            if path and os.path.isfile(path):
+                prop = fm.FontProperties(fname=path)
+                plt.rcParams["font.family"] = prop.get_name()
+                plt.rcParams["axes.unicode_minus"] = False
+                return prop, prop.get_name(), path
+        except Exception:
+            pass
+
+    plt.rcParams["axes.unicode_minus"] = False
+    return None, None, None
+
+
+JP_FONT, JP_FONT_NAME, JP_FONT_PATH = setup_japanese_font()
+HAS_JAPANESE_FONT = JP_FONT is not None
+
+
+def jp_or_en(japanese, english):
+    """Use Japanese on plots only when a Japanese font is available."""
+    return japanese if HAS_JAPANESE_FONT else english
+
 
 st.set_page_config(
     page_title="NMS 看護AI データ解析ラボ",
@@ -52,6 +116,25 @@ TARGET = "DEATH_EVENT"
 st.title("🩺 NMS 看護AI データ解析ラボ")
 st.caption("Heart Failure Clinical Records：記述統計 → ロジスティック回帰 → 混同行列 → ROC")
 
+if HAS_JAPANESE_FONT:
+    st.success(f"グラフ用日本語フォントを認識しました：{JP_FONT_NAME}", icon="✅")
+else:
+    st.warning(
+        "日本語フォントが見つからなかったため、グラフ内の文字だけ英語表示にします。"
+        " Streamlit本文は日本語のままです。",
+        icon="⚠️",
+    )
+
+with st.expander("フォント診断情報"):
+    if HAS_JAPANESE_FONT:
+        st.code(f"Font name: {JP_FONT_NAME}\nFont path: {JP_FONT_PATH}")
+    else:
+        st.code(
+            "Japanese font not found.\n"
+            "GitHub の app.py と同じ階層に packages.txt を置き、\n"
+            "中身を fonts-noto-cjk としてください。"
+        )
+
 with st.expander("このアプリで学ぶこと", expanded=True):
     st.markdown(
         """
@@ -81,6 +164,7 @@ else:
         data_source = "アプリに同梱した授業用サンプルCSV"
         st.info("CSVをまだ選んでいないため、同梱サンプルを表示しています。")
     except FileNotFoundError:
+        st.error("heart_failure_UCI_teaching_subset.csv が見つかりません。CSVをアップロードしてください。")
         st.stop()
 
 required = {TARGET, "time"}
@@ -117,9 +201,19 @@ with st.expander("各列の意味と欠損を確認", expanded=True):
 st.header("2. DEATH_EVENT=0 と 1 を比べる")
 available_focus = [v for v in FOCUS_VARS if v in df.columns]
 if available_focus:
-    summary = df.groupby(TARGET)[available_focus].agg(["count", "mean", "median"]).T
-    summary.columns = [f"DEATH_EVENT={c}" for c in summary.columns]
-    st.dataframe(summary.round(3), use_container_width=True)
+    summary_rows = []
+    for var in available_focus:
+        for g in [0, 1]:
+            s = df.loc[df[TARGET] == g, var].dropna()
+            summary_rows.append({
+                "変数": var,
+                "DEATH_EVENT": g,
+                "n": len(s),
+                "平均": s.mean(),
+                "中央値": s.median(),
+            })
+    summary_df = pd.DataFrame(summary_rows)
+    st.dataframe(summary_df.round(3), use_container_width=True, hide_index=True)
 
     plot_vars = st.multiselect(
         "分布を見る変数（2つまでがおすすめ）",
@@ -131,18 +225,23 @@ if available_focus:
     if plot_vars:
         cols = st.columns(min(2, len(plot_vars)))
         for i, var in enumerate(plot_vars):
-            ax_col = cols[i % len(cols)]
-            with ax_col:
+            with cols[i % len(cols)]:
                 fig, ax = plt.subplots(figsize=(5, 3.6))
                 vals = [
                     df.loc[df[TARGET] == g, var].dropna().values
                     for g in [0, 1]
                 ]
-                ax.violinplot(vals, positions=[0, 1], showmeans=False, showmedians=True, showextrema=True)
+                ax.violinplot(
+                    vals,
+                    positions=[0, 1],
+                    showmeans=False,
+                    showmedians=True,
+                    showextrema=True,
+                )
                 ax.set_xticks([0, 1], ["0", "1"])
                 ax.set_xlabel("DEATH_EVENT")
                 ax.set_ylabel(var)
-                ax.set_title(f"{var} の分布")
+                ax.set_title(jp_or_en(f"{var} の分布", f"Distribution of {var}"))
                 ax.grid(alpha=0.2)
                 st.pyplot(fig, clear_figure=True)
 
@@ -166,9 +265,7 @@ selected_features = st.multiselect(
 )
 
 st.caption("`time` と `source_row` は選択肢に表示されません。")
-
-threshold = st.slider("分類のしきい値", min_value=0.10, max_value=0.90, value=0.50, step=0.05)
-
+threshold = st.slider("分類のしきい値", 0.10, 0.90, 0.50, 0.05)
 run = st.button("ロジスティック回帰を実行", type="primary", use_container_width=True)
 
 if run:
@@ -232,6 +329,7 @@ if run:
     m5.metric("ROC-AUC", f"{auc:.3f}")
 
     left, right = st.columns(2)
+
     with left:
         st.subheader("混同行列")
         fig, ax = plt.subplots(figsize=(4.8, 4.0))
@@ -239,11 +337,24 @@ if run:
         for i in range(2):
             for j in range(2):
                 ax.text(j, i, str(cm[i, j]), ha="center", va="center", fontsize=16)
-        ax.set_xticks([0, 1], ["予測 0", "予測 1"])
-        ax.set_yticks([0, 1], ["実際 0", "実際 1"])
-        ax.set_xlabel("予測")
-        ax.set_ylabel("実際")
-        ax.set_title(f"しきい値 = {threshold:.2f}")
+
+        ax.set_xticks(
+            [0, 1],
+            [
+                jp_or_en("予測 0", "Predicted 0"),
+                jp_or_en("予測 1", "Predicted 1"),
+            ],
+        )
+        ax.set_yticks(
+            [0, 1],
+            [
+                jp_or_en("実際 0", "Actual 0"),
+                jp_or_en("実際 1", "Actual 1"),
+            ],
+        )
+        ax.set_xlabel(jp_or_en("予測", "Predicted"))
+        ax.set_ylabel(jp_or_en("実際", "Actual"))
+        ax.set_title(jp_or_en(f"しきい値 = {threshold:.2f}", f"Threshold = {threshold:.2f}"))
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
         st.pyplot(fig, clear_figure=True)
         st.write(f"TN={tn}, FP={fp}, FN={fn}, TP={tp}")
@@ -253,12 +364,17 @@ if run:
         fpr, tpr, thresholds = roc_curve(y, prob)
         fig, ax = plt.subplots(figsize=(4.8, 4.0))
         ax.plot(fpr, tpr, label=f"AUC = {auc:.3f}")
-        ax.plot([0, 1], [0, 1], linestyle="--", label="ランダム")
+        ax.plot(
+            [0, 1],
+            [0, 1],
+            linestyle="--",
+            label=jp_or_en("ランダム", "Random"),
+        )
         ax.set_xlim(0, 1)
         ax.set_ylim(0, 1)
-        ax.set_xlabel("偽陽性率 (1 - 特異度)")
-        ax.set_ylabel("真陽性率 (感度)")
-        ax.set_title("ROC curve")
+        ax.set_xlabel(jp_or_en("偽陽性率（1 - 特異度）", "False positive rate (1 - specificity)"))
+        ax.set_ylabel(jp_or_en("真陽性率（感度）", "True positive rate (sensitivity)"))
+        ax.set_title(jp_or_en("ROC曲線", "ROC curve"))
         ax.legend(loc="lower right")
         ax.grid(alpha=0.2)
         st.pyplot(fig, clear_figure=True)
@@ -318,9 +434,9 @@ if run:
 
     with st.expander("このアプリが行っている解析コード（学習用）"):
         st.code(
-            """# 概念的には次の処理をしています
+            '''# 概念的には次の処理をしています
 X = df[selected_features]       # time と source_row は除外
-y = df[\"DEATH_EVENT\"]
+y = df["DEATH_EVENT"]
 
 # 連続変数を標準化
 # ロジスティック回帰
@@ -328,7 +444,7 @@ y = df[\"DEATH_EVENT\"]
 # 各症例について学習に使っていないモデルで予測確率を計算
 # しきい値で0/1分類
 # 混同行列、感度、特異度、ROC-AUCを計算
-""",
+''',
             language="python",
         )
 
