@@ -387,6 +387,17 @@ if run:
         fig, ax = plt.subplots(figsize=(4.8, 4.0))
         ax.plot(fpr, tpr, label=f"AUC = {auc:.3f}")
         ax.plot([0, 1], [0, 1], linestyle="--", label="ランダム")
+        # 現在のしきい値に対応する点（混同行列と同じ感度・特異度）
+        thr_fpr = 1 - spec if not np.isnan(spec) else 0.0
+        ax.scatter([thr_fpr], [sens], s=90, color="red", edgecolor="white", linewidth=1.5,
+                   zorder=5, label=f"しきい値 {threshold:.2f} の点")
+        ax.annotate(
+            f"しきい値 {threshold:.2f}\n感度 {sens:.3f}・特異度 {spec:.3f}",
+            (thr_fpr, sens),
+            xytext=(min(thr_fpr + 0.08, 0.55), max(sens - 0.22, 0.08)),
+            fontsize=9, color="red",
+            arrowprops=dict(arrowstyle="-", color="red"),
+        )
         ax.set_xlim(0, 1)
         ax.set_ylim(0, 1)
         ax.set_xlabel("偽陽性率 (1 - 特異度)")
@@ -395,6 +406,7 @@ if run:
         ax.legend(loc="lower right")
         ax.grid(alpha=0.2)
         st.pyplot(fig, clear_figure=True)
+        st.caption("赤い点＝いま選んでいるしきい値での（偽陽性率, 感度）。しきい値を動かすと、点が曲線の上を移動します。")
 
     st.subheader("結果を読む")
     st.markdown(
